@@ -1,0 +1,5 @@
+name = "govCMS tools"
+description = "Provides utitlity functions to help deploy content and configuration to govCMS sites."
+core = 7.x
+php = 5.3
+package = "govCMS"
