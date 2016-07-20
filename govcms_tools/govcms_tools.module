@@ -137,3 +137,38 @@ function govcms_tools_delete_menu_item($path, $menu_name) {
     menu_link_delete($value->mlid);
   }
 }
+
+/**
+ * Stop tracking configuration items.
+ *
+ * @param array $items
+ *  Items to stop tracking.
+ */
+function govcms_tools_config_stop_tracking(array $items) {
+  if (class_exists('Drupal\configuration\Utils\ConfigIteratorSettings')) {
+    $config_settings = new Drupal\configuration\Utils\ConfigIteratorSettings(
+      array(
+        'build_callback' => 'loadFromStorage',
+        'callback' => 'import',
+        'process_dependencies' => FALSE,
+        'process_optionals' => FALSE,
+        'settings' => array(
+          'source' => NULL,
+        ),
+        'info' => array(
+          'imported' => array(),
+          'fail' => array(),
+          'no_handler' => array(),
+        )
+      )
+    );
+
+    $instance_method = array('Drupal\configuration\Config\ConfigurationManagement', 'createConfigurationInstance');
+    if (is_callable($instance_method)) {
+      foreach ($items as $item) {
+        $config_instance = Drupal\configuration\Config\ConfigurationManagement::createConfigurationInstance($item);
+        $config_instance->stopTracking($config_settings);
+      }
+    }
+  }
+}
