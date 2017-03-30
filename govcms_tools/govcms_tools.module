@@ -1,10 +1,17 @@
 <?php
 
 /**
+ * @file
+ * Helper tools for recurring govCMS developer tasks.
+ */
+
+/**
  * Creates and saves a bean to the database.
  *
  * Content for the bean should be passed in the form of a callback function.
  *
+ * @param string $bean_type
+ *   Machine readable name of the bean type.
  * @param string $label
  *   Label for the bean.
  * @param string $title
@@ -13,11 +20,15 @@
  *   Description for the bean.
  * @param string $delta
  *   Delta for the bean.
- * @param callable $content_callback
- *   Callback function which will return the content for the bean.
+ * @param string $content
+ *   Callback function which will return the content for the bean or textual content.
+ * @param string $body_format
+ *   Machine readable name of the text format.
  */
-function govcms_tools_create_bean($label, $title, $description, $delta, callable $content_callback) {
-  $bean = bean_create(array('type' => 'basic_content'));
+function govcms_tools_create_bean($bean_type = 'basic_content', $label, $title, $description, $delta, $content, $body_format = 'rich_text') {
+  if (!($bean = bean_load_delta($delta))) {
+    $bean = bean_create(array('type' => $bean_type));
+  }
   $bean->label = $label;
   $bean->title = $title;
   $bean->description = $description;
@@ -25,15 +36,16 @@ function govcms_tools_create_bean($label, $title, $description, $delta, callable
   $bean->field_bean_body = array(
     'und' => array(
       array(
-        'value' => $content_callback(),
-        'format' => 'rich_text',
+        'value' => is_callable($content) ? $content() : $content,
+        'format' => $body_format,
       ),
     ),
   );
   $bean->save();
   _block_rehash();
-}
 
+  return $bean;
+}
 
 /**
  * Helper function: Create date format/type.
@@ -77,18 +89,42 @@ function govcms_tools_create_date_format_type($date_format, $date_type, $date_ti
  * @param string $pages
  *   Optional argument to specify what pages block should appear on.
  */
-function govcms_tools_add_block_to_region($block_name, $module, $region, $weight, $theme, $pages = '') {
+function govcms_tools_add_block_to_region($block_name, $module, $region, $weight, $theme, $pages = '', $visibility = 0, $title = '') {
   db_merge('block')
     ->fields(array(
       'region' => $region,
       'status' => 1,
       'weight' => $weight,
       'pages' => $pages,
+      'visibility' => $visibility,
+      'title' => $title,
     ))
     ->condition('module', $module)
     ->condition('delta', $block_name)
     ->condition('theme', $theme)
     ->execute();
+}
+
+/**
+ * Restrict the node type that a block is displayed on.
+ *
+ * @param string $block_name
+ *   Name of the block to place.
+ * @param string $module
+ *   Module from which block originates.
+ * @param array $node_types
+ *   Node types that the block can display on.
+ */
+function govcms_tools_limit_block_node_type($block_name, $module, array $node_types) {
+  foreach ($node_types as $node_type) {
+    db_insert('block_node_type')
+      ->fields(array(
+        'module' => $module,
+        'delta' => $block_name,
+        'type' => $node_type
+      ))
+      ->execute();
+  }
 }
 
 /**
@@ -135,5 +171,147 @@ function govcms_tools_delete_menu_item($path, $menu_name) {
 
   foreach ($mlids as $key => $value) {
     menu_link_delete($value->mlid);
+  }
+}
+
+/**
+ * Create a menu link.
+ *
+ * @param array $items
+ *   An array of items.
+ *   Each item should be in a format as expected by menu_link_save().
+ *   Children items can be included as a multidimensional array.
+ *   The weight of the item will automatically be determined by the order in the array if not explicitly set.
+ * @param string $menu_name
+ *   The name of the menu. Recommended if not present in the $items array.
+ */
+function govcms_tools_create_menu_link($items, $menu_name = NULL) {
+  foreach ($items as $weight => $item) {
+    $children = array();
+    if (!empty($item['children'])) {
+      $children = $item['children'];
+      unset($item['children']);
+    }
+
+    // If no weight is set; determine it from the order in the array.
+    if (empty($item['weight'])) {
+      $item['weight'] = $weight;
+    }
+    // If no menu is set; set it to the value of $menu_name.
+    if (empty($item['menu_name'])) {
+      $item['menu_name'] = $menu_name;
+    }
+
+    // Create the link.
+    $plid = menu_link_save($item);
+
+    if (!empty($children)) {
+      foreach ($children as &$child) {
+        // Ensure the child is relevant to the parent.
+        $child['plid'] = $plid;
+      }
+      govcms_tools_create_menu_link($children, $item['menu_name']);
+    }
+  }
+}
+
+/**
+ * Update block settings.
+ *
+ * @param array $block
+ *   An array of block settings.
+ *   At the very least the 'delta' and 'module' key/value pairs must exist.
+ * @param string $theme
+ *   The theme name.
+ *   This value will be overridden if the theme is explicitly included in the $block array.
+ */
+function govcms_tools_update_block_settings($block, $theme = '') {
+  // Update default values if they are not already set.
+  $block['status'] = (!empty($block['status'])) ? $block['status'] : 1;
+  $block['pages'] = (!empty($block['pages'])) ? $block['pages'] : '';
+
+  db_merge('block')
+    ->key(array(
+      'theme'  => (!empty($block['theme'])) ? $block['theme'] : $theme,
+      'module' => $block['module'],
+      'delta'  => $block['delta'],
+    ))
+    ->fields($block)
+    ->execute();
+}
+
+/**
+ * Update a menu link.
+ *
+ * @param string $menu_name
+ *   The machine readable name of the menu.
+ * @param string $new_link_path
+ *   The desired new path for the menu item.
+ * @param string $link_title
+ *   The title of the menu item.
+ * @param string $existing_link_path
+ *   The existing path for the menu item. Optional.
+ */
+function govcms_tools_update_menu_link($menu_name, $new_link_path, $link_title, $existing_link_path = '') {
+  $item = array(
+    'menu_name' => $menu_name,
+    'link_path' => $new_link_path,
+    'link_title' => $link_title,
+    'customized' => 1,
+  );
+
+  $existing_item = $item;
+  if ($existing_link_path != '') {
+    $existing_item['link_path'] = $existing_link_path;
+
+    $existing_menu = db_select('menu_links', 'ml')
+      ->condition('ml.menu_name', $menu_name)
+      ->condition('ml.link_path', $existing_link_path)
+      ->condition('ml.link_title', $link_title)
+      ->fields('ml', array('mlid', 'weight'))
+      ->execute()
+      ->fetchAssoc();
+
+    if (!empty($existing_menu)) {
+      $item['mlid'] = $existing_menu['mlid'];
+      $item['weight'] = $existing_menu['weight'];
+    }
+  }
+
+  menu_link_save($item, $existing_item);
+}
+
+/**
+ * Stop tracking configuration items.
+ *
+ * @param array $items
+ *   Items to stop tracking.
+ */
+function govcms_tools_config_stop_tracking(array $items) {
+  if (class_exists('Drupal\configuration\Utils\ConfigIteratorSettings')) {
+    $config_settings = new Drupal\configuration\Utils\ConfigIteratorSettings(
+      array(
+        'build_callback' => 'loadFromStorage',
+        'callback' => 'import',
+        'process_dependencies' => FALSE,
+        'process_optionals' => FALSE,
+        'settings' => array(
+          'source' => NULL,
+        ),
+        'info' => array(
+          'imported' => array(),
+          'fail' => array(),
+          'no_handler' => array(),
+        )
+      )
+    );
+
+    $instance_method = array('Drupal\configuration\Config\ConfigurationManagement', 'createConfigurationInstance');
+    if (is_callable($instance_method)) {
+      foreach ($items as $item) {
+        $config_instance = Drupal\configuration\Config\ConfigurationManagement::createConfigurationInstance($item);
+        $config_instance->stopTracking($config_settings);
+      }
+    }
   }
 }
